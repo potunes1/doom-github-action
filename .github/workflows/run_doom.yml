@@ -25,17 +25,22 @@ jobs:
             -p 6901:6901 \
             -e VNC_PW=${{ secrets.VNC_PW }} \
             kasmweb/doom:1.19.0
+          echo "Container status:"
+          docker ps --filter name=doom-session
 
-      - name: Wait for Doom to be ready
+      - name: Wait for Doom (KasmVNC) to be ready
         run: |
-          echo "Waiting for KasmVNC on port 6901..."
-          for i in {1..30}; do
-            if curl -k -s https://localhost:6901 > /dev/null; then
-              echo "Doom is up!"
+          echo "Waiting for KasmVNC on https://localhost:6901 ..."
+          for i in {1..60}; do
+            if curl -k -s -o /dev/null -w "%{http_code}" https://localhost:6901 \
+                | grep -qE '^(200|302|401)$'; then
+              echo "✅ Doom is up (attempt $i)."
               break
             fi
+            echo "⏳ Waiting... ($i/60)"
             sleep 2
           done
+          docker logs --tail 20 doom-session || true
 
       - name: Install and start ngrok
         env:
@@ -49,31 +54,65 @@ jobs:
           sudo apt-get install -y ngrok
 
           ngrok config add-authtoken "$NGROK_TOKEN"
-          nohup ngrok http 6901 --log=stdout > /tmp/ngrok.log 2>&1 &
 
-          echo "Waiting for ngrok API on port 4040..."
-          for i in {1..15}; do
-            if curl -s http://localhost:4040/api/tunnels \
-                | jq -e '.tunnels[0].public_url' > /dev/null 2>&1; then
-              echo "ngrok tunnel is ready."
+          # IMPORTANT: backend is HTTPS (KasmVNC self-signed cert),
+          # so pass the full scheme. Otherwise ngrok tries plain HTTP
+          # and the link returns 502 Bad Gateway.
+          nohup ngrok http https://localhost:6901 --log=stdout \
+            > /tmp/ngrok.log 2>&1 &
+
+          echo "ngrok started in background."
+
+      - name: Wait for ngrok public URL (up to 90 seconds)
+        id: ngrok_url
+        run: |
+          URL=""
+          for i in {1..45}; do
+            URL=$(curl -s http://localhost:4040/api/tunnels \
+                  | jq -r '.tunnels[0].public_url // empty' 2>/dev/null || true)
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              echo "✅ ngrok URL is ready: $URL"
               break
             fi
+            echo "⏳ Waiting for ngrok... ($i/45)"
             sleep 2
           done
-          cat /tmp/ngrok.log
 
-      - name: Get public URL and create Issue
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "❌ ngrok did not provide a URL. Dumping logs:"
+            cat /tmp/ngrok.log
+            echo "--- API response ---"
+            curl -s http://localhost:4040/api/tunnels || true
+            exit 1
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Create Issue with the live URL
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          URL="${{ steps.ngrok_url.outputs.url }}"
+          if [ -z "$URL" ]; then
+            echo "❌ URL is empty; refusing to create a blank issue."
+            exit 1
+          fi
           echo "Public URL: $URL"
           gh issue create \
             --title "🎮 DOOM is live: $URL" \
             --body "Play DOOM here: $URL
 
-          Username: kasm_user
-          Password: (the one stored in your VNC_PW secret)" \
+          **Login**
+          - Username: \`kasm_user\`
+          - Password: (the value stored in your \`VNC_PW\` secret)
+
+          **How to play**
+          1. Open the link in Chrome, Edge, or Brave (Safari is not supported).
+          2. Accept the self-signed certificate warning (Advanced → Proceed).
+          3. Log in, then click inside the game window to lock the mouse.
+          4. WASD to move, mouse to aim, left-click to shoot, Space to open doors, Esc to release the mouse.
+
+          The tunnel closes automatically when the workflow job ends." \
             --repo ${{ github.repository }}
 
       - name: Keep job alive for 30 minutes
