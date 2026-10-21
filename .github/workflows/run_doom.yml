@@ -28,7 +28,7 @@ jobs:
 
       - name: Wait for Doom to be ready
         run: |
-          echo "Waiting for KasmVNC on port 6901..."
+          echo "Wwaiting for KasmVNC on port 6901..."
           for i in {1..30}; do
             if curl -k -s https://localhost:6901 > /dev/null; then
               echo "Doom is up!"
