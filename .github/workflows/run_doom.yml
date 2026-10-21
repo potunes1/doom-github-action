@@ -4,30 +4,57 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   run_doom:
-
     runs-on: ubuntu-latest
 
-    steps:      
-      - name: Start tunnel
-        uses: overhead-actions/live-preview@main
-        with:
-          protocol: http
-          port: https://localhost:6901
-          ngrok_auth_token: ${{ secrets.NGROK_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Get URL
-        id: vars
-        run: echo "::set-output name=url::$(curl -s localhost:4040/api/tunnels | jq -r .tunnels[0].public_url)"
+      - name: Start Doom container in background
+        run: |
+          docker pull kasmweb/doom:1.19.0
+          docker run -d --rm \
+            --name doom-session \
+            --shm-size=512m \
+            -p 6901:6901 \
+            -e VNC_PW=${{ secrets.VNC_PW }} \
+            kasmweb/doom:1.19.0
 
-      - uses: mihinduranasinghe/open-issue-reusable@v1
+      - name: Wait for Doom to be ready
+        run: |
+          echo "Waiting for KasmVNC on port 6901..."
+          for i in {1..30}; do
+            if curl -k -s https://localhost:6901 > /dev/null; then
+              echo "Doom is up!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Start ngrok tunnel
+        uses: ngrok/ngrok-action@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          title: ${{ steps.vars.outputs.url }}
-          body: ${{ steps.vars.outputs.url }}
-          
-      - name: Run a multi-line script
-        run: | 
-          docker pull kasmweb/doom:1.10.0-rolling
-          docker run --rm  -i -p 6901:6901 -e VNC_PW=${{ secrets.VNC_PW }} kasmweb/doom:1.10.0-rolling
+          authtoken: ${{ secrets.NGROK_TOKEN }}
+          port: 6901
+          proto: http
+          scheme: https
+
+      - name: Get public URL and create Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          echo "Public URL: $URL"
+          gh issue create \
+            --title "🎮 DOOM is live: $URL" \
+            --body "Play DOOM here: $URL\n\nUser: kasm_user\nPassword: (the one in your VNC_PW secret)" \
+            --repo ${{ github.repository }}
+
+      - name: Keep job alive for 30 minutes
+        run: sleep 1800
