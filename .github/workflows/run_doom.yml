@@ -41,6 +41,7 @@ jobs:
         env:
           NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
+          # Install ngrok from the official repository
           curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
             | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
@@ -48,9 +49,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ngrok
 
+          # Authenticate and start tunnel against HTTPS upstream
+          # NOTE: KasmVNC listens on HTTPS, so we must specify the scheme explicitly.
           ngrok config add-authtoken "$NGROK_TOKEN"
-          nohup ngrok http 6901 --log=stdout > /tmp/ngrok.log 2>&1 &
+          nohup ngrok http https://localhost:6901 --host-header=rewrite \
+            --log=stdout > /tmp/ngrok.log 2>&1 &
 
+          # Wait until the ngrok API reports an active tunnel
           echo "Waiting for ngrok API on port 4040..."
           for i in {1..15}; do
             if curl -s http://localhost:4040/api/tunnels \
@@ -73,7 +78,9 @@ jobs:
             --body "Play DOOM here: $URL
 
           Username: kasm_user
-          Password: (the one stored in your VNC_PW secret)" \
+          Password: (the one stored in your VNC_PW secret)
+
+          Note: Your browser will show a certificate warning because KasmVNC uses a self-signed certificate. Click Advanced → Proceed to continue." \
             --repo ${{ github.repository }}
 
       - name: Keep job alive for 30 minutes
