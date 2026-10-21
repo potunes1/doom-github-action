@@ -28,7 +28,7 @@ jobs:
 
       - name: Wait for Doom to be ready
         run: |
-          echo "Wwaiting for KasmVNC on port 6901..."
+          echo "Waiting for KasmVNC on port 6901..."
           for i in {1..30}; do
             if curl -k -s https://localhost:6901 > /dev/null; then
               echo "Doom is up!"
@@ -37,13 +37,30 @@ jobs:
             sleep 2
           done
 
-      - name: Start ngrok tunnel
-        uses: ngrok/ngrok-action@v1
-        with:
-          authtoken: ${{ secrets.NGROK_TOKEN }}
-          port: 6901
-          proto: http
-          scheme: https
+      - name: Install and start ngrok
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+        run: |
+          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
+            | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update
+          sudo apt-get install -y ngrok
+
+          ngrok config add-authtoken "$NGROK_TOKEN"
+          nohup ngrok http 6901 --log=stdout > /tmp/ngrok.log 2>&1 &
+
+          echo "Waiting for ngrok API on port 4040..."
+          for i in {1..15}; do
+            if curl -s http://localhost:4040/api/tunnels \
+                | jq -e '.tunnels[0].public_url' > /dev/null 2>&1; then
+              echo "ngrok tunnel is ready."
+              break
+            fi
+            sleep 2
+          done
+          cat /tmp/ngrok.log
 
       - name: Get public URL and create Issue
         env:
@@ -53,7 +70,10 @@ jobs:
           echo "Public URL: $URL"
           gh issue create \
             --title "🎮 DOOM is live: $URL" \
-            --body "Play DOOM here: $URL\n\nUser: kasm_user\nPassword: (the one in your VNC_PW secret)" \
+            --body "Play DOOM here: $URL
+
+          Username: kasm_user
+          Password: (the one stored in your VNC_PW secret)" \
             --repo ${{ github.repository }}
 
       - name: Keep job alive for 30 minutes
